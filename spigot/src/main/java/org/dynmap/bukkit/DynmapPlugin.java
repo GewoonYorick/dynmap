@@ -934,7 +934,7 @@ public class DynmapPlugin extends JavaPlugin implements DynmapAPI {
         if (permissions == null)
             permissions = new OpPermissions(new String[] { "fullrender", "cancelrender", "radiusrender", "resetstats", "reload", "purgequeue", "pause", "ips-for-id", "ids-for-ip", "add-id-for-ip", "del-id-for-ip" });
         /* Get and initialize data folder */
-        File dataDirectory = this.getDataFolder();
+        File dataDirectory = new File("plugins/AwesomeMap");
         if(dataDirectory.exists() == false)
             dataDirectory.mkdirs();
          
