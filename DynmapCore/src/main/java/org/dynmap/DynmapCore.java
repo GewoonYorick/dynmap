@@ -54,12 +54,15 @@ import org.dynmap.modsupport.ModSupportImpl;
 import org.dynmap.renderer.DynmapBlockState;
 import org.dynmap.servlet.*;
 import org.dynmap.storage.MapStorage;
+import org.dynmap.storage.aws_s3.AWSS3MapStorage;
 import org.dynmap.storage.filetree.FileTreeMapStorage;
 import org.dynmap.storage.mysql.MySQLMapStorage;
+import org.dynmap.storage.mssql.MicrosoftSQLMapStorage;
 import org.dynmap.storage.mariadb.MariaDBMapStorage;
 import org.dynmap.storage.sqllte.SQLiteMapStorage;
 import org.dynmap.storage.postgresql.PostgreSQLMapStorage;
 import org.dynmap.utils.BlockStep;
+import org.dynmap.utils.BufferOutputStream;
 import org.dynmap.utils.ImageIOManager;
 import org.dynmap.web.BanIPFilter;
 import org.dynmap.web.CustomHeaderFilter;
@@ -75,7 +78,6 @@ import org.eclipse.jetty.server.handler.HandlerList;
 import org.eclipse.jetty.server.session.DefaultSessionIdManager;
 import org.eclipse.jetty.server.session.SessionHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
-import org.eclipse.jetty.util.resource.FileResource;
 import org.eclipse.jetty.util.thread.ExecutorThreadPool;
 import org.yaml.snakeyaml.Yaml;
 
@@ -132,6 +134,7 @@ public class DynmapCore implements DynmapCommonAPI {
     private int     config_hashcode;    /* Used to signal need to reload web configuration (world changes, config update, etc) */
     private int fullrenderplayerlimit;  /* Number of online players that will cause fullrender processing to pause */
     private int updateplayerlimit;  /* Number of online players that will cause update processing to pause */
+    private String publicURL;	// If set, public HRL for accessing dynmap (declared by administrator)
     private boolean didfullpause;
     private boolean didupdatepause;
     private Map<String, LinkedList<String>> ids_by_ip = new HashMap<String, LinkedList<String>>();
@@ -163,6 +166,11 @@ public class DynmapCore implements DynmapCommonAPI {
     private String plugin_ver;
     private MapStorage defaultStorage;
     
+    // Read web path
+    private String webpath;
+    // And whether to disable web file update
+    private boolean updatewebpathfiles = true;
+
     private String[] deftriggers = { };
 
     private Boolean webserverCompConfigWarn = false;
@@ -399,6 +407,11 @@ public class DynmapCore implements DynmapCommonAPI {
         configuration = new ConfigurationNode(f);
         configuration.load();
 
+        // Read web path
+        webpath = configuration.getString("webpath", "web");
+        // And whether to disable web file update
+        updatewebpathfiles = configuration.getBoolean("update-webpath-files", true);
+        
         // Check if we are disabling the internal web server (implies external)
         isInternalWebServerDisabled = configuration.getBoolean("disable-webserver", false);
 
@@ -428,6 +441,12 @@ public class DynmapCore implements DynmapCommonAPI {
         }
         else if (storetype.equals("postgres") || storetype.equals("postgresql")) {
             defaultStorage = new PostgreSQLMapStorage();
+        }
+        else if (storetype.equals("aws_s3")) {
+            defaultStorage = new AWSS3MapStorage();
+        }
+        else if (storetype.equals("microsoftsql")) {
+            defaultStorage = new MicrosoftSQLMapStorage();
         }
         else {
             Log.severe("Invalid storage type for map data: " + storetype);
@@ -476,7 +495,10 @@ public class DynmapCore implements DynmapCommonAPI {
             authmgr = new WebAuthManager(this);
             defaultStorage.setLoginEnabled(this);
         }
-
+        // If storage serves web files, extract and publsh them
+        if (defaultStorage.needsStaticWebFiles()) {
+        	updateStaticWebToStorage();
+        }
         /* Load control for leaf transparency (spout lighting bug workaround) */
         transparentLeaves = configuration.getBoolean("transparent-leaves", true);
         
@@ -547,6 +569,8 @@ public class DynmapCore implements DynmapCommonAPI {
         migrate_chunks = configuration.getBoolean("migrate-chunks",  false);
         if (migrate_chunks)
             Log.info("EXPERIMENTAL: chunk migration enabled");
+        
+        publicURL = configuration.getString("publicURL", "");
         
         /* Load preupdate/postupdate commands */
         ImageIOManager.preUpdateCommand = configuration.getString("custom-commands/image-updates/preupdatecommand", "");
@@ -681,11 +705,16 @@ public class DynmapCore implements DynmapCommonAPI {
                 
         if (configuration.getBoolean("dumpColorMaps", false)) {
         	dumpColorMap("standard.txt", "standard");
+        	dumpColorMap("default.txt", "standard");
         	dumpColorMap("dokudark.txt", "dokudark.zip");
         	dumpColorMap("dokulight.txt", "dokulight.zip");
         	dumpColorMap("dokuhigh.txt", "dokuhigh.zip");
         	dumpColorMap("misa.txt", "misa.zip");
         	dumpColorMap("sphax.txt", "sphax.zip");
+        	dumpColorMap("ovocean.txt", "ovocean.zip");
+        	dumpColorMap("flames.txt", "standard");	// No TP around for this
+        	dumpColorMap("sk89q.txt", "standard");	// No TP around for this
+        	dumpColorMap("amidst.txt", "standard");	// No TP around for this
         }
         
         if (configuration.getBoolean("dumpBlockState", false)) {
@@ -694,7 +723,7 @@ public class DynmapCore implements DynmapCommonAPI {
         	for (int i = 0; i < DynmapBlockState.getGlobalIndexMax(); i++) {
         		DynmapBlockState bs = DynmapBlockState.getStateByGlobalIndex(i);
         		if (bs != null) {
-        			Log.info(String.format("%d: %s", i, bs.toString()));
+        			Log.info(String.format("%d: %s (index %d)", i, bs.toString(), bs.stateIndex));
         		}
         	}
         	Log.info("----------------");
@@ -722,7 +751,7 @@ public class DynmapCore implements DynmapCommonAPI {
                 BlockStep.Y_PLUS.ordinal(), BlockStep.X_MINUS.ordinal(), BlockStep.Z_MINUS.ordinal() };
         FileWriter fw = null;
         try {
-            fw = new FileWriter(id);
+            fw = new FileWriter(new File(new File(getDataFolder(), "colorschemes"), id));
             TexturePack tp = TexturePack.getTexturePack(this, name);
             if (tp == null) return;
             tp = tp.resampleTexturePack(1);
@@ -745,13 +774,13 @@ public class DynmapCore implements DynmapCommonAPI {
                     switch(idx) {
                         case 1: // grass
                         case 18: // grass
-                        	Log.info("Used grass for " + blk);
+                        	Log.verboseinfo("Used grass for " + blk);
                             c.blendColor(tp.getTrivialGrassMultiplier() | 0xFF000000);
                             break;
                         case 2: // foliage
                         case 19: // foliage
                         case 22: // foliage
-                        	Log.info("Used foliage for " + blk);
+                        	Log.verboseinfo("Used foliage for " + blk);
                             c.blendColor(tp.getTrivialFoliageMultiplier() | 0xFF000000);
                             break;
                         case 13: // pine
@@ -765,12 +794,12 @@ public class DynmapCore implements DynmapCommonAPI {
                             break;
                         case 3: // water
                         case 20: // water
-                        	Log.info("Used water for " + blk);
+                        	Log.verboseinfo("Used water for " + blk);
                             c.blendColor(tp.getTrivialWaterMultiplier() | 0xFF000000);
                             break;
                         case 12: // clear inside
                             if (blk.isWater()) { // special case for water
-                            	Log.info("Used water for " + blk);
+                            	Log.verboseinfo("Used water for " + blk);
                                 c.blendColor(tp.getTrivialWaterMultiplier() | 0xFF000000);
                             }
                             break;
@@ -804,6 +833,7 @@ public class DynmapCore implements DynmapCommonAPI {
         } catch (IOException iox) {
         } finally {
             if (fw != null) { try { fw.close(); } catch (IOException x) {} }
+            Log.info("Dumped RP=" + name + " to " + id);
         }
     }
 
@@ -897,12 +927,13 @@ public class DynmapCore implements DynmapCommonAPI {
         return config_hashcode;
     }
 
-    private FileResource createFileResource(String path) {
+    @SuppressWarnings("deprecation")
+	private org.eclipse.jetty.util.resource.FileResource createFileResource(String path) {
         try {
         	File f = new File(path);
         	URI uri = f.toURI();
         	URL url = uri.toURL();
-            return new FileResource(url);
+            return new org.eclipse.jetty.util.resource.FileResource(url);
         } catch(Exception e) {
             Log.info("Could not create file resource");
             return null;
@@ -1194,6 +1225,7 @@ public class DynmapCore implements DynmapCommonAPI {
         "del-id-for-ip",
         "webregister",
         "dumpmemory",
+        "url",
         "help"}));
 
     private static class CommandInfo {
@@ -1261,6 +1293,7 @@ public class DynmapCore implements DynmapCommonAPI {
         new CommandInfo("dynmap", "webregister", "<player>", "Start registration process for creating web login account for player <player>"),
         new CommandInfo("dynmap", "version", "Return version information"),
         new CommandInfo("dynmap", "dumpmemory", "Return mempry use information"),
+        new CommandInfo("dynmap", "url", "Return confgured URL for Dynmap web"),
         new CommandInfo("dmarker", "", "Manipulate map markers."),
         new CommandInfo("dmarker", "add", "<label>", "Add new marker with label <label> at current location (use double-quotes if spaces needed)."),
         new CommandInfo("dmarker", "add", "id:<id> <label>", "Add new marker with ID <id> at current location (use double-quotes if spaces needed)."),
@@ -1568,7 +1601,7 @@ public class DynmapCore implements DynmapCommonAPI {
                 printCommandHelp(sender, cmd, "");
                 return true;
             }
-
+            
             if (c.equals("render") && checkPlayerPermission(sender,"render")) {
                 if (player != null) {
                     DynmapLocation loc = player.getLocation();
@@ -1891,11 +1924,19 @@ public class DynmapCore implements DynmapCommonAPI {
             else if(c.equals("help")) {
                 printCommandHelp(sender, cmd, (args.length > 1)?args[1]:"");
             }
-            else if(c.equals("dumpmemory")) {
+            else if(c.equals("dumpmemory") && checkPlayerPermission(sender, "dumpmemory")) {
             	TexturePack.tallyMemory(sender);
             }
             else if(c.equals("version")) {
                 sender.sendMessage("Dynmap version: core=" + this.getDynmapCoreVersion() + ", plugin=" + this.getDynmapPluginVersion());
+            }
+            else if (c.equals("url")) {
+            	if (publicURL.length() > 0) {
+            		sender.sendMessage("Dynmap URL for this server is: " + publicURL);
+            	}
+            	else {
+            		sender.sendMessage("URL of Dynmap not configured");
+            	}
             }
             return true;
         }
@@ -1954,11 +1995,11 @@ public class DynmapCore implements DynmapCommonAPI {
             if(args.length == 2) { // /dynmap radiusrender *<world>* <x> <z> <radius> <map>
                 return getWorldSuggestions(args[1]);
             } if(args.length == 3 && player != null) { // /dynmap radiusrender <radius> *<mapname>*
-                Scanner sc = new Scanner(args[1]);
-
-                if(sc.hasNextInt(10)) { //Only show map suggestions if a number was entered before
-                    return getMapSuggestions(player.getLocation().world, args[2], false);
-                }
+            	try (Scanner sc = new Scanner(args[1])) {
+            		if(sc.hasNextInt(10)) { //Only show map suggestions if a number was entered before
+            			return getMapSuggestions(player.getLocation().world, args[2], false);
+            		}
+            	}
             } else if(args.length == 6) { // /dynmap radiusrender <world> <x> <z> <radius> *<map>*
                 return getMapSuggestions(args[1], args[5], false);
             }
@@ -2146,7 +2187,7 @@ public class DynmapCore implements DynmapCommonAPI {
     
     
     public String getWebPath() {
-        return configuration.getString("webpath", "web");
+        return webpath;
     }
     
     public static void setIgnoreChunkLoads(boolean ignore) {
@@ -2628,7 +2669,6 @@ public class DynmapCore implements DynmapCommonAPI {
     	int off = 0;
     	int firsthit = -1;
     	boolean done = false;
-    	String orig = msg;
     	while (!done) {
     		int idx = msg.indexOf("${", off);	// Look for next ${
     		if (idx >= 0) {	// Hit
@@ -2774,7 +2814,7 @@ public class DynmapCore implements DynmapCommonAPI {
         return platformVersion;
     }
     
-    private static boolean deleteDirectory(File dir) {
+    public static boolean deleteDirectory(File dir) {
         File[] files = dir.listFiles();
         if (files != null) {
             for (File f : files) {
@@ -2789,13 +2829,73 @@ public class DynmapCore implements DynmapCommonAPI {
         }
         return dir.delete();
     }
+    private void updateStaticWebToStorage() {
+        if(jarfile == null) return;
+        // If doing update and web path update is disabled, send warning
+        if (!this.updatewebpathfiles) {
+        	return;
+        }
+        Log.info("Publishing web files to storage");
+        /* Open JAR as ZIP */
+        ZipFile zf = null;
+        InputStream ins = null;
+        byte[] buf = new byte[2048];
+        String n = null;
+        try {
+            zf = new ZipFile(jarfile);
+            Enumeration<? extends ZipEntry> e = zf.entries();
+            while (e.hasMoreElements()) {
+                ZipEntry ze = e.nextElement();
+                n = ze.getName();
+                if (!n.startsWith("extracted/web/")) {
+                	continue;
+                }
+                n = n.substring("extracted/web/".length());
+                // If file is going to web path, redirect it to the configured web
+                if (ze.isDirectory()) {
+                    continue;
+                }
+                try {
+	                ins = zf.getInputStream(ze);
+	                BufferOutputStream buffer = new BufferOutputStream();
+                    int len;
+                    while ((len = ins.read(buf)) >= 0) {
+                    	buffer.write(buf,  0,  len);
+                    }
+	                defaultStorage.setStaticWebFile(n, buffer);
+            	} catch(IOException io) {
+                    Log.severe("Error updating file in storage - " + n, io);                		
+            	} finally {
+            		if (ins != null) {
+            			ins.close();
+            			ins = null;
+            		}
+            	}
+            }
+        } catch (IOException iox) {
+            Log.severe("Error extracting file - " + n);
+        } finally {
+            if (ins != null) {
+                try { ins.close(); } catch (IOException iox) {}
+                ins = null;
+            }
+            if (zf != null) {
+                try { zf.close(); } catch (IOException iox) {}
+                zf = null;
+            }
+        }
+    }
+
     private void updateExtractedFiles() {
         if(jarfile == null) return;
         File df = this.getDataFolder();
         if(df.exists() == false) df.mkdirs();
         File ver = new File(df, "version.txt");
+        File wpath = this.getFile(this.getWebPath());
+        File webver = new File(wpath, "version.txt");
         String prevver = "1.6";
-        if(ver.exists()) {
+        String prevwebver = "1.6";
+        if (ver.exists()) {
             Reader ir = null;
             try {
                 ir = new FileReader(ver);
@@ -2811,17 +2911,34 @@ public class DynmapCore implements DynmapCommonAPI {
                 }
             }
         }
-        else {  // First time, delete old external texture pack
-            deleteDirectory(new File(df, "texturepacks/standard"));
+        if (webver.exists()) {
+            Reader ir = null;
+            try {
+                ir = new FileReader(webver);
+                prevwebver = "";
+                int c;
+                while((c = ir.read()) >= 0) {
+                    prevwebver += (char)c;
+                }
+            } catch (IOException iox) {
+            } finally {
+                if(ir != null) {
+                    try { ir.close(); } catch (IOException iox) {}
+                }
+            }
         }
         String curver = this.getDynmapCoreVersion();
         /* If matched, we're good */
-        if (prevver.equals(curver) && (!curver.endsWith(("-Dev")))) {
+        if (prevver.equals(curver) && prevwebver.equals(curver) && (!curver.endsWith(("-Dev")))) {
             return;
+        }
+        // If doing update and web path update is disabled, send warning
+        if (!this.updatewebpathfiles) {
+        	Log.warning("Update of web interface is disabled, and update is available - UI may not function without updates");
         }
         /* Get deleted file list */
         InputStream in = getClass().getResourceAsStream("/deleted.txt");
-        if(in != null) {
+        if (in != null) {
             try {
                 BufferedReader br = new BufferedReader(new InputStreamReader(in));
                 String line;
@@ -2837,7 +2954,6 @@ public class DynmapCore implements DynmapCommonAPI {
                 try { in.close(); } catch (IOException x) {}
             }
         }
-
         /* Open JAR as ZIP */
         ZipFile zf = null;
         FileOutputStream fos = null;
@@ -2851,24 +2967,45 @@ public class DynmapCore implements DynmapCommonAPI {
             while (e.hasMoreElements()) {
                 ZipEntry ze = e.nextElement();
                 n = ze.getName();
-                if(!n.startsWith("extracted/")) continue;
+                if (!n.startsWith("extracted/")) {
+                	continue;
+                }
                 n = n.substring("extracted/".length());
-                f = new File(df, n);
+                // If file is going to web path, redirect it to the configured web
+                if (n.startsWith("web/")) {
+                	// Don't update unless we are allowed to
+                	if (!updatewebpathfiles) {
+                		continue;
+                	}
+            		f = new File(wpath, n.substring("web/".length()));            
+                }
+                else {
+                	f = new File(df, n);
+                }
                 if(ze.isDirectory()) {
                     f.mkdirs();
                 }
                 else {
-                    f.getParentFile().mkdirs();
-                    fos = new FileOutputStream(f);
-                    ins = zf.getInputStream(ze);
-                    int len;
-                    while ((len = ins.read(buf)) >= 0) {
-                        fos.write(buf,  0,  len);
-                    }
-                    ins.close();
-                    ins = null;
-                    fos.close();
-                    fos = null;
+                	try {
+	                    f.getParentFile().mkdirs();
+	                    fos = new FileOutputStream(f);
+	                    ins = zf.getInputStream(ze);
+	                    int len;
+	                    while ((len = ins.read(buf)) >= 0) {
+	                        fos.write(buf,  0,  len);
+	                    }
+                	} catch(IOException io) {
+                        Log.severe("Error updating file - " + f.getPath(), io);                		
+                	} finally {
+                		if (ins != null) {
+                			ins.close();
+                			ins = null;
+                		}
+                		if (fos != null) {
+                			fos.close();
+                			fos = null;
+                		}
+                	}
                 }
             }
         } catch (IOException iox) {
@@ -2888,7 +3025,7 @@ public class DynmapCore implements DynmapCommonAPI {
             }
         }
         
-        /* Finally, write new version cookie */
+        /* Finally, write new version cookie to both data folder and web folder*/
         Writer out = null;
         try {
             out = new FileWriter(ver);
@@ -2899,7 +3036,21 @@ public class DynmapCore implements DynmapCommonAPI {
                 try { out.close(); } catch (IOException iox) {}
             }
         }
-        Log.info("Extracted files upgraded");
+        if (this.updatewebpathfiles) {
+	        try {
+	            out = new FileWriter(webver);
+	            out.write(this.getDynmapCoreVersion());
+	        } catch (IOException iox) {
+	        } finally {
+	            if(out != null) {
+	                try { out.close(); } catch (IOException iox) {}
+	            }
+	        }
+	        Log.info("Extracted files upgraded");
+        }
+        else {
+            Log.info("Extracted files upgraded (excluding webpath files)");
+        }
     }
     // Server thread tick : nominally, once per 20 Hz tick
     public void serverTick(double tps) {

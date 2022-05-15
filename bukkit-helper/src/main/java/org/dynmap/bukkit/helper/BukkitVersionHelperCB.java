@@ -4,7 +4,6 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Map;
 import java.util.Set;
 
@@ -55,6 +54,12 @@ public class BukkitVersionHelperCB extends BukkitVersionHelperGeneric {
         isBadUnload = HDBlockModels.checkVersionRange(mcver, "1.9-");
         Log.verboseinfo("MCVER=" + mcver + ", isBadUnload=" + isBadUnload);
     }
+
+    @Override
+    public boolean isUnsafeAsync() {
+        return true;
+    }
+
     @Override
     protected String getNMSPackage() {
         Server srv = Bukkit.getServer();

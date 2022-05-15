@@ -4,7 +4,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
-import org.dynmap.Log;
 import org.dynmap.hdmap.HDBlockModels;
 
 /* Generic biome mapping */
@@ -297,6 +296,9 @@ public class BiomeMap {
     }
     public boolean isDefault() {
         return isDef;
+    }
+    public String getId() {
+        return id;
     }
     public String toString() {
     	return String.format("%s(%s)", id, resourcelocation);

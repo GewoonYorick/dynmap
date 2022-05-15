@@ -9,7 +9,6 @@ import org.bukkit.ChunkSnapshot;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.dynmap.DynmapChunk;
-import org.dynmap.Log;
 import org.dynmap.common.chunk.GenericChunkCache;
 import org.dynmap.renderer.DynmapBlockState;
 import org.dynmap.utils.MapChunkCache;
@@ -35,6 +34,10 @@ public abstract class BukkitVersionHelper {
     protected BukkitVersionHelper() {
         
     }
+    /**
+     * Get if it's unsafe to load chunks async
+     */
+    public abstract boolean isUnsafeAsync();
     /**
      * Get list of defined biomebase objects
      */

@@ -248,7 +248,13 @@ public class DynmapPlugin
                 	}
                 	statename += p.getName() + "=" + bs.getValue(p).toString();
                 }
-                int lightAtten = bs.isSolidRender(EmptyBlockGetter.INSTANCE, BlockPos.ZERO) ? 15 : (bs.propagatesSkylightDown(EmptyBlockGetter.INSTANCE, BlockPos.ZERO) ? 0 : 1);
+                int lightAtten = 15;
+                try {	// Workaround for mods with broken block state logic...
+                	lightAtten =bs.isSolidRender(EmptyBlockGetter.INSTANCE, BlockPos.ZERO) ? 15 : (bs.propagatesSkylightDown(EmptyBlockGetter.INSTANCE, BlockPos.ZERO) ? 0 : 1);
+                } catch (Exception x) {
+                	Log.warning(String.format("Exception while checking lighting data for block state: %s[%s]", bn, statename));
+                	Log.verboseinfo("Exception: " + x.toString());
+                }
                 //Log.info("statename=" + bn + "[" + statename + "], lightAtten=" + lightAtten);
                 // Fill in base attributes
                 bld.setBaseState(basebs).setStateIndex(idx - baseidx).setBlockName(bn).setStateName(statename).setMaterial(mat.toString()).setLegacyBlockID(idx).setAttenuatesLight(lightAtten);
@@ -880,6 +886,9 @@ public class DynmapPlugin
                 f.get();
             }
             catch (CancellationException cx) {
+                return null;
+            }
+            catch (InterruptedException cx) {
                 return null;
             }
             catch (ExecutionException xx) {
@@ -1788,6 +1797,7 @@ public class DynmapPlugin
         	if(!onblockchange) return;
         	BlockUpdateRec r = new BlockUpdateRec();
         	r.w = event.getWorld();
+            if(!(r.w instanceof ServerLevel)) return;  // band-aid to prevent errors in unsupported 'running in client' scenario
 			ForgeWorld fw = getWorld((ServerLevel)r.w, false);
 			if (fw == null) return;
 			r.wid = fw.getName();

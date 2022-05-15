@@ -102,14 +102,14 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
         
         public MarkerUpdated(Marker m, boolean deleted) {
             this.id = m.getMarkerID();
-            this.label = m.getLabel();
+            this.label = Client.sanitizeHTML(m.getLabel());
             this.x = m.getX();
             this.y = m.getY();
             this.z = m.getZ();
             this.set = m.getMarkerSet().getMarkerSetID();
             this.icon = m.getMarkerIcon().getMarkerIconID();
-            this.markup = m.isLabelMarkup();
-            this.desc = m.getDescription();
+            this.markup = true;	// We are markup format all the time now
+            this.desc = Client.sanitizeHTML(m.getDescription());
             this.dim = m.getMarkerIcon().getMarkerIconSize().getSize();
             this.minzoom = m.getMinZoom();
             this.maxzoom = m.getMaxZoom();
@@ -153,7 +153,7 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
         
         public AreaMarkerUpdated(AreaMarker m, boolean deleted) {
             this.id = m.getMarkerID();
-            this.label = m.getLabel();
+            this.label = Client.sanitizeHTML(m.getLabel());
             this.ytop = m.getTopY();
             this.ybottom = m.getBottomY();
             int cnt = m.getCornerCount();
@@ -168,10 +168,10 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
             opacity = m.getLineOpacity();
             fillcolor = String.format("#%06X", m.getFillColor());
             fillopacity = m.getFillOpacity();
-            desc = m.getDescription();
+            desc = Client.sanitizeHTML(m.getDescription());
             this.minzoom = m.getMinZoom();
             this.maxzoom = m.getMaxZoom();
-            this.markup = m.isLabelMarkup();
+            this.markup = true;	// We are markup format all the time now
 
             this.set = m.getMarkerSet().getMarkerSetID();
             if(deleted) 
@@ -207,10 +207,12 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
         public String desc;
         public int minzoom;
         public int maxzoom;
+        public boolean markup;
         
         public PolyLineMarkerUpdated(PolyLineMarker m, boolean deleted) {
             this.id = m.getMarkerID();
-            this.label = m.getLabel();
+            this.label = Client.sanitizeHTML(m.getLabel());
+            this.markup = true;	// We are markup format all the time now
             int cnt = m.getCornerCount();
             x = new double[cnt];
             y = new double[cnt];
@@ -223,7 +225,7 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
             color = String.format("#%06X", m.getLineColor());
             weight = m.getLineWeight();
             opacity = m.getLineOpacity();
-            desc = m.getDescription();
+            desc = Client.sanitizeHTML(m.getDescription());
             this.minzoom = m.getMinZoom();
             this.maxzoom = m.getMaxZoom();
 
@@ -265,21 +267,23 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
         public String desc;
         public int minzoom;
         public int maxzoom;
+        public boolean markup;
         
         public CircleMarkerUpdated(CircleMarker m, boolean deleted) {
             this.id = m.getMarkerID();
-            this.label = m.getLabel();
+            this.label = Client.sanitizeHTML(m.getLabel());
             this.x = m.getCenterX();
             this.y = m.getCenterY();
             this.z = m.getCenterZ();
             this.xr = m.getRadiusX();
             this.zr = m.getRadiusZ();
+            this.markup = true;	// We are markup format all the time now
             color = String.format("#%06X", m.getLineColor());
             weight = m.getLineWeight();
             opacity = m.getLineOpacity();
             fillcolor = String.format("#%06X", m.getFillColor());
             fillopacity = m.getFillOpacity();
-            desc = m.getDescription();
+            desc = Client.sanitizeHTML(m.getDescription());
             this.minzoom = m.getMinZoom();
             this.maxzoom = m.getMaxZoom();
 
@@ -338,7 +342,7 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
     }
     
     private boolean stop = false;
-    private Set<String> dirty_worlds = new HashSet<String>();
+    private ConcurrentHashMap<String, String> dirty_worlds = new ConcurrentHashMap<String, String>();
     private boolean dirty_markers = false;
     
     private class DoFileWrites implements Runnable {
@@ -346,18 +350,19 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
             if(stop)
                 return;
             lock.readLock().lock();
+            Set<String> dirty = new HashSet<String>(dirty_worlds.keySet());
+            dirty_worlds.clear();            
             try {
                 /* Write markers first - drives JSON updates too */
-                if(dirty_markers) {
+                if (dirty_markers) {
                     doSaveMarkers();
                     dirty_markers = false;
                 }
                 /* Process any dirty worlds */
-                if(!dirty_worlds.isEmpty()) {
-                    for(String world : dirty_worlds) {
+                if (!dirty.isEmpty()) {
+                    for(String world : dirty) {
                         writeMarkersFile(world);
                     }
-                    dirty_worlds.clear();
                 }
             } finally {
                 lock.readLock().unlock();
@@ -868,7 +873,7 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
     private void freshenMarkerFiles() {
         if(MapManager.mapman != null) {
             for(DynmapWorld w : MapManager.mapman.worlds) {
-                dirty_worlds.add(w.getName());
+                dirty_worlds.put(w.getName(),"");
             }
         }
     }
@@ -927,7 +932,7 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
     static void markerUpdated(MarkerImpl marker, MarkerUpdate update) {
         /* Freshen marker file for the world for this marker */
         if(api != null)
-            api.dirty_worlds.add(marker.getNormalizedWorld());
+            api.dirty_worlds.put(marker.getNormalizedWorld(),"");
         /* Enqueue client update */
         if(MapManager.mapman != null)
             MapManager.mapman.pushUpdate(marker.getNormalizedWorld(), new MarkerUpdated(marker, update == MarkerUpdate.DELETED));
@@ -940,7 +945,7 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
     static void areaMarkerUpdated(AreaMarkerImpl marker, MarkerUpdate update) {
         /* Freshen marker file for the world for this marker */
         if(api != null)
-            api.dirty_worlds.add(marker.getNormalizedWorld());
+            api.dirty_worlds.put(marker.getNormalizedWorld(),"");
         /* Enqueue client update */
         if(MapManager.mapman != null)
             MapManager.mapman.pushUpdate(marker.getNormalizedWorld(), new AreaMarkerUpdated(marker, update == MarkerUpdate.DELETED));
@@ -953,7 +958,7 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
     static void polyLineMarkerUpdated(PolyLineMarkerImpl marker, MarkerUpdate update) {
         /* Freshen marker file for the world for this marker */
         if(api != null)
-            api.dirty_worlds.add(marker.getNormalizedWorld());
+            api.dirty_worlds.put(marker.getNormalizedWorld(),"");
         /* Enqueue client update */
         if(MapManager.mapman != null)
             MapManager.mapman.pushUpdate(marker.getNormalizedWorld(), new PolyLineMarkerUpdated(marker, update == MarkerUpdate.DELETED));
@@ -966,7 +971,7 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
     static void circleMarkerUpdated(CircleMarkerImpl marker, MarkerUpdate update) {
         /* Freshen marker file for the world for this marker */
         if(api != null)
-            api.dirty_worlds.add(marker.getNormalizedWorld());
+            api.dirty_worlds.put(marker.getNormalizedWorld(),"");
         /* Enqueue client update */
         if(MapManager.mapman != null)
             MapManager.mapman.pushUpdate(marker.getNormalizedWorld(), new CircleMarkerUpdated(marker, update == MarkerUpdate.DELETED));
@@ -3454,7 +3459,7 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
     @Override
     public void triggered(DynmapWorld t) {
         /* Update markers for now-active world */
-        dirty_worlds.add(t.getName());
+        dirty_worlds.put(t.getName(),"");
     }
 
     /* Remove icon */
@@ -3557,5 +3562,23 @@ public class MarkerAPIImpl implements MarkerAPI, Event.Listener<DynmapWorld> {
         for(MarkerSetImpl ms : api.markersets.values()) {
         	ms.addEnteredMarkers(entered, worldid, x, y, z);
         }
+    }
+    /**
+     * Check if loaded string needs to be escaped (if non-markup)
+     */
+    public static String escapeForHTMLIfNeeded(String txt, boolean markup) {
+    	if (markup) return txt;	// Not needed for markup
+    	// If escaped properly, these characters aren't present (all but ampersand of HTML active characrers
+    	if (txt != null) {
+    		if ((txt.indexOf('<') >= 0) || (txt.indexOf('>') >= 0) || (txt.indexOf('\'') >= 0) || (txt.indexOf('"') >= 0)) {
+    			return Client.encodeForHTML(txt);
+    		}
+    		// If ampersand without semicolon after (simplistic check for ampersand without being escape sequence)
+    		int idx = txt.lastIndexOf('&');
+    		if ((idx >= 0) && (txt.indexOf(';', idx) < 0)) {
+    			return Client.encodeForHTML(txt);    			
+    		}
+    	}
+    	return txt;
     }
 }
