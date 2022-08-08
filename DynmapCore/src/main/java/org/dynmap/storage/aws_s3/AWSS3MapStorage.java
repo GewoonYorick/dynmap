@@ -66,8 +66,9 @@ public class AWSS3MapStorage extends MapStorage {
         @Override
         public boolean exists() {
         	boolean exists = false;
-        	S3Client s3 = getConnection();
+        	S3Client s3 = null;
         	try {
+        		s3 = getConnection();
         		ListObjectsV2Request req = ListObjectsV2Request.builder().bucketName(bucketname).prefix(baseKey).maxKeys(1).build();
         	    ListObjectsV2Response rslt = s3.listObjectsV2(req);
         		if ((rslt != null) && (rslt.getKeyCount() > 0))
@@ -76,6 +77,8 @@ public class AWSS3MapStorage extends MapStorage {
             	if (!x.getCode().equals("SignatureDoesNotMatch")) {	// S3 behavior when no object match....
             		Log.severe("AWS Exception", x);
             	}
+            } catch (StorageShutdownException x) {
+            	
         	} finally {
         		releaseConnection(s3);
         	}
@@ -89,15 +92,17 @@ public class AWSS3MapStorage extends MapStorage {
 
         @Override
         public TileRead read() {
-        	S3Client s3 = getConnection();
+        	S3Client s3 = null;
         	try {
+        		s3 = getConnection();
         		GetObjectRequest req = GetObjectRequest.builder().bucketName(bucketname).key(baseKey).build();
     			ResponseBytes<GetObjectResponse> obj = s3.getObjectAsBytes(req);
     			if (obj != null) {
     				GetObjectResponse rsp = obj.getResponse();
                     TileRead tr = new TileRead();
                     byte[] buf = obj.getBytes();
-                    tr.image = new BufferInputStream(buf);
+                    if (buf == null) { return null; }
+                	tr.image = new BufferInputStream(buf);
                     tr.format = ImageEncoding.fromContentType(rsp.getContentType());
                     Map<String, String> meta = rsp.getMetadata();
                     String v = meta.get("x-dynmap-hash");
@@ -114,6 +119,7 @@ public class AWSS3MapStorage extends MapStorage {
         		return null;	// Nominal case if it doesn't exist
             } catch (S3Exception x) {
         		Log.severe("AWS Exception", x);
+            } catch (StorageShutdownException x) {
         	} finally {
         		releaseConnection(s3);
         	}
@@ -123,8 +129,9 @@ public class AWSS3MapStorage extends MapStorage {
         @Override
         public boolean write(long hash, BufferOutputStream encImage, long timestamp) {
         	boolean done = false;
-        	S3Client s3 = getConnection();
+        	S3Client s3 = null;
         	try {
+            	s3 = getConnection();
         		if (encImage == null) { // Delete?
         			DeleteObjectRequest req = DeleteObjectRequest.builder().bucketName(bucketname).key(baseKey).build();
         			s3.deleteObject(req);
@@ -137,6 +144,7 @@ public class AWSS3MapStorage extends MapStorage {
     			done = true;
             } catch (S3Exception x) {
             	Log.severe("AWS Exception", x);
+            } catch (StorageShutdownException x) {
         	} finally {
         		releaseConnection(s3);
         	}
@@ -249,12 +257,13 @@ public class AWSS3MapStorage extends MapStorage {
         }
         // Now creste the access client for the S3 service
         Log.info("Using AWS S3 storage: web site at S3 bucket " + bucketname + " in region " + region);
-        S3Client s3 = getConnection();
-        if (s3 == null) {
-        	Log.severe("Error creating S3 access client");      
-        	return false;
-        }
+        S3Client s3 = null;
         try {
+            s3 = getConnection();
+            if (s3 == null) {
+            	Log.severe("Error creating S3 access client");      
+            	return false;
+            }
 	        // Make sure bucket exists (do list)
 	        ListObjectsV2Request listreq = ListObjectsV2Request.builder()
 	        		.bucketName(bucketname)
@@ -269,6 +278,8 @@ public class AWSS3MapStorage extends MapStorage {
 	        rslt.getContents();
         } catch (S3Exception s3x) {
     		Log.severe("AWS Exception", s3x);
+    		return false;
+        } catch (StorageShutdownException x) {
     		return false;
         } finally {
     		releaseConnection(s3);
@@ -334,8 +345,9 @@ public class AWSS3MapStorage extends MapStorage {
     	String basekey = prefix + "tiles/" + world.getName() + "/" + map.getPrefix() + var.variantSuffix + "/";
     	ListObjectsV2Request req = ListObjectsV2Request.builder().bucketName(bucketname).prefix(basekey).maxKeys(1000).build();
     	boolean done = false;
-    	S3Client s3 = getConnection();
+    	S3Client s3 = null;
     	try {
+        	s3 = getConnection();
         	while (!done) {
         		ListObjectsV2Response result = s3.listObjectsV2(req);
         		List<S3Object> objects = result.getContents();
@@ -395,6 +407,7 @@ public class AWSS3MapStorage extends MapStorage {
 	        	Log.severe("AWS Exception", x);
 	        	Log.severe("req=" + req);
         	}
+        } catch (StorageShutdownException x) {
         } finally {
     		releaseConnection(s3);
         }
@@ -442,8 +455,9 @@ public class AWSS3MapStorage extends MapStorage {
     private void processPurgeMapTiles(DynmapWorld world, MapType map, ImageVariant var) {
     	String basekey = prefix + "tiles/" + world.getName() + "/" + map.getPrefix() + var.variantSuffix + "/";
 		ListObjectsV2Request req = ListObjectsV2Request.builder().bucketName(bucketname).prefix(basekey).delimiter("").maxKeys(1000).encodingType("url").requestPayer("requester").build();
-		S3Client s3 = getConnection();
+		S3Client s3 = null;
     	try {
+    		s3 = getConnection();
     		boolean done = false;
     		while (!done) {
 	    		ListObjectsV2Response result = s3.listObjectsV2(req);
@@ -466,6 +480,7 @@ public class AWSS3MapStorage extends MapStorage {
 	        	Log.severe("AWS Exception", x);
 	        	Log.severe("req=" + req);
         	}
+        } catch (StorageShutdownException x) {
         } finally {
     		releaseConnection(s3);
         }
@@ -494,8 +509,9 @@ public class AWSS3MapStorage extends MapStorage {
             BufferOutputStream encImage) {
     	boolean done = false;
     	String baseKey = prefix + "tiles/faces/" + facetype.id + "/" + playername + ".png";
-    	S3Client s3 = getConnection();
+    	S3Client s3 = null;
     	try {
+        	s3 = getConnection();
     		if (encImage == null) { // Delete?
 				DeleteObjectRequest delreq = DeleteObjectRequest.builder().bucketName(bucketname).key(baseKey).build();
 			    s3.deleteObject(delreq);
@@ -507,6 +523,7 @@ public class AWSS3MapStorage extends MapStorage {
 			done = true;
         } catch (S3Exception x) {
         	Log.severe("AWS Exception", x);
+        } catch (StorageShutdownException x) {
     	} finally {
     		releaseConnection(s3);
     	}
@@ -523,8 +540,9 @@ public class AWSS3MapStorage extends MapStorage {
     public boolean hasPlayerFaceImage(String playername, FaceType facetype) {
     	String baseKey = prefix + "tiles/faces/" + facetype.id + "/" + playername + ".png";
     	boolean exists = false;
-    	S3Client s3 = getConnection();
+    	S3Client s3 = null;
     	try {
+        	s3 = getConnection();
     		ListObjectsV2Request req = ListObjectsV2Request.builder().bucketName(bucketname).prefix(baseKey).maxKeys(1).build();
     	    ListObjectsV2Response rslt = s3.listObjectsV2(req);
     		if ((rslt != null) && (rslt.getKeyCount() > 0))
@@ -533,6 +551,7 @@ public class AWSS3MapStorage extends MapStorage {
         	if (!x.getCode().equals("SignatureDoesNotMatch")) {	// S3 behavior when no object match....
         		Log.severe("AWS Exception", x);
         	}
+        } catch (StorageShutdownException x) {
     	} finally {
     		releaseConnection(s3);
     	}
@@ -543,8 +562,9 @@ public class AWSS3MapStorage extends MapStorage {
     public boolean setMarkerImage(String markerid, BufferOutputStream encImage) {
     	boolean done = false;
     	String baseKey = prefix + "tiles/_markers_/" + markerid + ".png";
-    	S3Client s3 = getConnection();
+    	S3Client s3 = null;
     	try {
+        	s3 = getConnection();
     		if (encImage == null) { // Delete?
 				DeleteObjectRequest delreq = DeleteObjectRequest.builder().bucketName(bucketname).key(baseKey).build();
 			    s3.deleteObject(delreq);
@@ -556,6 +576,7 @@ public class AWSS3MapStorage extends MapStorage {
 			done = true;
         } catch (S3Exception x) {
         	Log.severe("AWS Exception", x);
+        } catch (StorageShutdownException x) {
     	} finally {
     		releaseConnection(s3);
     	}
@@ -571,8 +592,9 @@ public class AWSS3MapStorage extends MapStorage {
     public boolean setMarkerFile(String world, String content) {
     	boolean done = false;
     	String baseKey = prefix + "tiles/_markers_/marker_" + world + ".json";
-    	S3Client s3 = getConnection();
+    	S3Client s3 = null;
     	try {
+        	s3 = getConnection();
     		if (content == null) { // Delete?
 				DeleteObjectRequest delreq = DeleteObjectRequest.builder().bucketName(bucketname).key(baseKey).build();
 			    s3.deleteObject(delreq);
@@ -584,6 +606,7 @@ public class AWSS3MapStorage extends MapStorage {
 			done = true;
         } catch (S3Exception x) {
         	Log.severe("AWS Exception", x);
+        } catch (StorageShutdownException x) {
     	} finally {
     		releaseConnection(s3);
     	}
@@ -668,8 +691,9 @@ public class AWSS3MapStorage extends MapStorage {
     	
     	boolean done = false;
     	String baseKey = prefix + fileid;
-    	S3Client s3 = getConnection();
+    	S3Client s3 = null;
     	try {
+        	s3 = getConnection();
     		byte[] cacheval = standalone_cache.get(fileid);
     		
     		if (content == null) { // Delete?
@@ -716,14 +740,16 @@ public class AWSS3MapStorage extends MapStorage {
 			done = true;
         } catch (S3Exception x) {
         	Log.severe("AWS Exception", x);
+        } catch (StorageShutdownException x) {
     	} finally {
     		releaseConnection(s3);
     	}
         return done;
     }
 
-    private S3Client getConnection() throws S3Exception {
+    private S3Client getConnection() throws S3Exception, StorageShutdownException {
         S3Client c = null;
+        if (isShutdown) throw new StorageShutdownException();
         synchronized (cpool) {
             while (c == null) {
                 for (int i = 0; i < cpool.length; i++) {    // See if available connection

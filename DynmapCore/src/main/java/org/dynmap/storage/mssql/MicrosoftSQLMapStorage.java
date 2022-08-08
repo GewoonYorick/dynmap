@@ -49,6 +49,8 @@ public class MicrosoftSQLMapStorage extends MapStorage {
     protected int port;
     private static final int POOLSIZE = 5;
     private Connection[] cpool = new Connection[POOLSIZE];
+    private long[] cpoolLastUseTS = new long[POOLSIZE];	// Time when last returned to pool
+    private static final long IDLE_TIMEOUT = 60000;	// Use 60 second timeout
     private int cpoolCount = 0;
     private static final Charset UTF8 = Charset.forName("UTF-8");
         
@@ -132,7 +134,11 @@ public class MicrosoftSQLMapStorage extends MapStorage {
                     rslt.lastModified = rs.getLong("LastUpdate");
                     rslt.format = MapType.ImageEncoding.fromOrd(rs.getInt("Format"));
                     byte[] img = rs.getBytes("Image");
-                    rslt.image = new BufferInputStream(img);
+                    if (img == null) { 
+                    	rslt = null; 
+                    } else {
+                    	rslt.image = new BufferInputStream(img);
+                    }
                 }
                 rs.close();
                 stmt.close();
@@ -523,12 +529,22 @@ public class MicrosoftSQLMapStorage extends MapStorage {
     private Connection getConnection() throws SQLException {
         Connection c = null;
         synchronized (cpool) {
+        	long now = System.currentTimeMillis();
             while (c == null) {
                 for (int i = 0; i < cpool.length; i++) {    // See if available connection
                     if (cpool[i] != null) { // Found one
-                        c = cpool[i];
-                        cpool[i] = null;
-                        break;
+                    	// If in pool too long, close it and move on
+                    	if ((now - cpoolLastUseTS[i]) > IDLE_TIMEOUT) {
+                            try { cpool[i].close(); } catch (SQLException x) {}
+                            cpool[i] = null;
+                            cpoolCount--;
+                    	}
+                    	else {	// Else, use the connection
+                    		c = cpool[i];
+                    		cpool[i] = null;
+                    		cpoolLastUseTS[i] = now;
+                    		break;
+                    	}
                     }
                 }
                 if (c == null) {
@@ -561,6 +577,7 @@ public class MicrosoftSQLMapStorage extends MapStorage {
                 for (int i = 0; i < POOLSIZE; i++) {
                     if (cpool[i] == null) {
                         cpool[i] = c;
+                        cpoolLastUseTS[i] = System.currentTimeMillis();	// Record last use time
                         c = null; // Mark it recovered (no close needed
                         cpool.notifyAll();
                         break;
@@ -672,22 +689,32 @@ public class MicrosoftSQLMapStorage extends MapStorage {
         }
         try {
             c = getConnection();
-            // Query tiles for given mapkey
-            Statement stmt = c.createStatement();
-            ResultSet rs = stmt.executeQuery("SELECT x,y,zoom,Format FROM " + tableTiles + " WHERE MapID=" + mapkey + ";");
-            while (rs.next()) {
-                StorageTile st = new StorageTile(world, map, rs.getInt("x"), rs.getInt("y"), rs.getInt("zoom"), var);
-                final MapType.ImageEncoding encoding = MapType.ImageEncoding.fromOrd(rs.getInt("Format"));
-                if(cb != null)
-                    cb.tileFound(st, encoding);
-                if(cbBase != null && st.zoom == 0)
-                    cbBase.tileFound(st, encoding);
-                st.cleanup();
+            boolean done = false;
+            int offset = 0;
+            int limit = 100;
+            
+            while (!done) {
+	            // Query tiles for given mapkey
+	            Statement stmt = c.createStatement();
+	            ResultSet rs = stmt.executeQuery(String.format("SELECT x,y,zoom,Format FROM %s WHERE MapID=%d OFFSET %d LIMIT %d;", tableTiles, mapkey, offset, limit));
+	            int cnt = 0;
+	            while (rs.next()) {
+	                StorageTile st = new StorageTile(world, map, rs.getInt("x"), rs.getInt("y"), rs.getInt("zoom"), var);
+	                final MapType.ImageEncoding encoding = MapType.ImageEncoding.fromOrd(rs.getInt("Format"));
+	                if(cb != null)
+	                    cb.tileFound(st, encoding);
+	                if(cbBase != null && st.zoom == 0)
+	                    cbBase.tileFound(st, encoding);
+	                st.cleanup();
+	                cnt++;
+	            }
+	            rs.close();
+	            stmt.close();
+	            if (cnt < limit) done = true;
+	            offset += cnt;
             }
             if(cbEnd != null)
                 cbEnd.searchEnded();
-            rs.close();
-            stmt.close();
         } catch (SQLException x) {
         	logSQLException("Tile enum error", x);
             err = true;

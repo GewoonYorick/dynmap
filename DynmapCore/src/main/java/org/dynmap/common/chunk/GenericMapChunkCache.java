@@ -766,7 +766,7 @@ public abstract class GenericMapChunkCache extends MapChunkCache {
 	}
 
 	/**
-	 * Read NBT data from loaded chunks - do not needs to be called from server/world
+	 * Read NBT data from loaded chunks - do not needs to be called from server/world <p>
 	 * Will throw {@link IllegalStateException} if not supporting
 	 */
 	public void getLoadedChunksAsync() {
@@ -836,7 +836,9 @@ public abstract class GenericMapChunkCache extends MapChunkCache {
 	}
 
 	/**
-	 * Prepare the chunks async
+	 * Loads all chunks in the world asynchronously.
+	 * <p>
+	 * If it is not supported, it will throw {@link IllegalStateException}
 	 */
 	public void loadChunksAsync() {
 		getLoadedChunksAsync();
@@ -923,6 +925,12 @@ public abstract class GenericMapChunkCache extends MapChunkCache {
 		return cnt;
 	}
 
+	/**
+	 * It loads chunks from the cache or from the world, and if the chunk is not visible, it fills it with stone, ocean or
+	 * empty chunk
+	 * <p>
+	 * if it's not supported, will throw {@link IllegalStateException}
+	 */
 	public void readChunksAsync() {
 		class SimplePair { //pair of the chunk and the data which is readed async
 			private final Supplier<GenericChunk> supplier;
@@ -1296,8 +1304,10 @@ public abstract class GenericMapChunkCache extends MapChunkCache {
                 long[] bdataPacked = nbtbiomes.getLongArray("data");
                 GenericNBTList bpalette = nbtbiomes.getList("palette", 8);
                 GenericBitStorage bdata = null;
-                if (bdataPacked.length > 0)
-                    bdata = nbt.makeBitStorage(bdataPacked.length, 64, bdataPacked);
+                if (bdataPacked.length > 0) {
+                	int valsPerLong = (64 / bdataPacked.length);
+                    bdata = nbt.makeBitStorage((64 + valsPerLong - 1) / valsPerLong, 64, bdataPacked);
+                }
                 for (int j = 0; j < 64; j++) {
                     int b = bdata != null ? bdata.get(j) : 0;
                     sbld.xyzBiome(j & 0x3, (j & 0x30) >> 4, (j & 0xC) >> 2, BiomeMap.byBiomeResourceLocation(bpalette.getString(b)));
